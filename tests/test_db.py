@@ -104,6 +104,52 @@ class TestMeshDB:
         assert row["status"] == "pending"
         assert row["retry_count"] == 0
 
+    async def test_ensure_tables_creates_link_codes(self, db):
+        rows = await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='link_codes'"
+        )
+        assert len(rows) == 1
+
+    async def test_ensure_tables_creates_link_attempts(self, db):
+        rows = await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='link_attempts'"
+        )
+        assert len(rows) == 1
+
+    async def test_ensure_tables_creates_settings(self, db):
+        rows = await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='settings'"
+        )
+        assert len(rows) == 1
+
+    async def test_transaction_commit(self, db):
+        async with db.transaction() as cursor:
+            await cursor.execute(
+                "INSERT INTO mesh_nodes (id, name, status) VALUES (?, ?, ?)",
+                ("txn-1", "txn-test", "online"),
+            )
+        row = await db.fetch_one("SELECT id FROM mesh_nodes WHERE id = ?", ("txn-1",))
+        assert row is not None
+
+    async def test_transaction_rollback_on_error(self, db):
+        with pytest.raises(ValueError):
+            async with db.transaction() as cursor:
+                await cursor.execute(
+                    "INSERT INTO mesh_nodes (id, name, status) VALUES (?, ?, ?)",
+                    ("txn-2", "will-rollback", "online"),
+                )
+                raise ValueError("force rollback")
+        row = await db.fetch_one("SELECT id FROM mesh_nodes WHERE id = ?", ("txn-2",))
+        assert row is None
+
+    async def test_transaction_cursor_fetchone(self, db):
+        await db.insert("mesh_nodes", {"id": "q1", "name": "query", "status": "online"})
+        async with db.transaction() as cursor:
+            await cursor.execute("SELECT name FROM mesh_nodes WHERE id = ?", ("q1",))
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == "query"
+
     async def test_in_memory_db(self):
         db = MeshDB(":memory:")
         await db.ensure_tables()
