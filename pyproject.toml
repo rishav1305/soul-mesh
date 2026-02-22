@@ -4,28 +4,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soul-mesh"
-version = "0.1.0"
-description = "Multi-device mesh networking with hub election, peer discovery, and delta sync."
+version = "0.2.0"
+description = "Distributed compute mesh for homelabbers -- unified RAM, storage, and CPU across devices."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
 authors = [{name = "Rishav"}]
-keywords = ["mesh", "distributed", "peer-discovery", "hub-election", "sync"]
+keywords = ["mesh", "distributed", "cluster", "homelab", "compute"]
 
 dependencies = [
     "aiosqlite>=0.20.0",
-    "pydantic-settings>=2.7.0",
     "structlog>=24.0.0",
     "websockets>=12.0",
     "PyJWT>=2.8.0",
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "zeroconf>=0.131.0",
 ]
 
 [project.optional-dependencies]
+server = ["fastapi>=0.115", "uvicorn>=0.30"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "httpx>=0.27",
     "ruff>=0.8.0",
 ]
+
+[project.scripts]
+soul-mesh = "soul_mesh.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
