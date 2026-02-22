@@ -95,7 +95,7 @@ async def redeem_link_code(
         )
 
     await db.execute(
-        "UPDATE mesh_nodes SET account_id = ? WHERE id = ?",
+        "UPDATE nodes SET account_id = ? WHERE id = ?",
         (account_id, node_id),
     )
 

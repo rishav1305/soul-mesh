@@ -68,13 +68,13 @@ class TestGenerateLinkCode:
 
 class TestRedeemLinkCode:
     async def test_valid_code_returns_account_id(self, db):
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         code = await generate_link_code(db, "acct-1")
         result = await redeem_link_code(db, code, "node-1", "127.0.0.1")
         assert result == "acct-1"
 
     async def test_code_deleted_after_redemption(self, db):
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         code = await generate_link_code(db, "acct-1")
         await redeem_link_code(db, code, "node-1", "127.0.0.1")
         row = await db.fetch_one("SELECT code FROM link_codes WHERE code = ?", (code,))
@@ -94,16 +94,16 @@ class TestRedeemLinkCode:
         assert result is None
 
     async def test_sets_account_on_node(self, db):
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         code = await generate_link_code(db, "acct-1")
         await redeem_link_code(db, code, "node-1", "127.0.0.1")
         row = await db.fetch_one(
-            "SELECT account_id FROM mesh_nodes WHERE id = ?", ("node-1",)
+            "SELECT account_id FROM nodes WHERE id = ?", ("node-1",)
         )
         assert row["account_id"] == "acct-1"
 
     async def test_saves_account_to_settings(self, db):
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         code = await generate_link_code(db, "acct-1")
         await redeem_link_code(db, code, "node-1", "127.0.0.1")
         row = await db.fetch_one(
@@ -113,7 +113,7 @@ class TestRedeemLinkCode:
 
     async def test_updates_existing_settings(self, db):
         await db.insert("settings", {"key": "mesh_account_id", "value": "old-acct"})
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         code = await generate_link_code(db, "new-acct")
         await redeem_link_code(db, code, "node-1", "127.0.0.1")
         row = await db.fetch_one(
@@ -124,7 +124,7 @@ class TestRedeemLinkCode:
 
 class TestRateLimiting:
     async def test_per_ip_rate_limit(self, db):
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         for i in range(MAX_LINK_ATTEMPTS_PER_15MIN):
             code = await generate_link_code(db, "acct-1")
             await redeem_link_code(db, code, "node-1", "1.2.3.4")
@@ -134,7 +134,7 @@ class TestRateLimiting:
         assert result is None
 
     async def test_different_ip_not_limited(self, db):
-        await db.insert("mesh_nodes", {"id": "node-1", "name": "test", "status": "online"})
+        await db.insert("nodes", {"id": "node-1", "name": "test", "status": "online"})
         for i in range(MAX_LINK_ATTEMPTS_PER_15MIN):
             code = await generate_link_code(db, "acct-1")
             await redeem_link_code(db, code, "node-1", "1.2.3.4")
