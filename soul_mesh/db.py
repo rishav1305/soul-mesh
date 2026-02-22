@@ -11,9 +11,7 @@ from contextlib import asynccontextmanager
 
 # Table allowlist for insert() -- prevents SQL injection via table name
 _INSERTABLE_TABLES: frozenset[str] = frozenset({
-    "mesh_nodes", "pending_writes",
-    "events", "tasks", "knowledge", "chat_history",
-    "link_codes", "link_attempts", "settings",
+    "nodes", "heartbeats", "settings", "link_codes", "link_attempts",
 })
 
 
@@ -110,34 +108,80 @@ class MeshDB:
         finally:
             await self._close(conn)
 
+    async def upsert_node(self, data: dict) -> None:
+        """Insert or update a node by id.
+
+        Uses INSERT ... ON CONFLICT(id) DO UPDATE for:
+        name, host, port, platform, arch, cpu_cores, ram_total_mb,
+        storage_total_gb, last_heartbeat.
+        """
+        sql = """
+            INSERT INTO nodes (id, name, host, port, platform, arch,
+                               cpu_cores, ram_total_mb, storage_total_gb,
+                               last_heartbeat)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                host = excluded.host,
+                port = excluded.port,
+                platform = excluded.platform,
+                arch = excluded.arch,
+                cpu_cores = excluded.cpu_cores,
+                ram_total_mb = excluded.ram_total_mb,
+                storage_total_gb = excluded.storage_total_gb,
+                last_heartbeat = excluded.last_heartbeat
+        """
+        params = (
+            data["id"],
+            data.get("name", ""),
+            data.get("host", ""),
+            data.get("port", 8340),
+            data.get("platform", ""),
+            data.get("arch", ""),
+            data.get("cpu_cores", 0),
+            data.get("ram_total_mb", 0),
+            data.get("storage_total_gb", 0),
+            data.get("last_heartbeat", ""),
+        )
+        conn = await self._connect()
+        try:
+            await conn.execute(sql, params)
+            await conn.commit()
+        finally:
+            await self._close(conn)
+
     async def ensure_tables(self) -> None:
         """Create mesh tables if they don't exist."""
         conn = await self._connect()
         try:
             await conn.execute(
-                """CREATE TABLE IF NOT EXISTS mesh_nodes (
+                """CREATE TABLE IF NOT EXISTS nodes (
                     id TEXT PRIMARY KEY,
                     account_id TEXT DEFAULT '',
-                    name TEXT DEFAULT '',
-                    host TEXT DEFAULT '',
+                    name TEXT NOT NULL DEFAULT '',
+                    host TEXT NOT NULL DEFAULT '',
                     port INTEGER DEFAULT 8340,
+                    role TEXT DEFAULT 'agent',
                     platform TEXT DEFAULT '',
                     arch TEXT DEFAULT '',
-                    ram_mb INTEGER DEFAULT 0,
-                    storage_mb INTEGER DEFAULT 0,
-                    is_hub INTEGER DEFAULT 0,
-                    capability REAL DEFAULT 0.0,
-                    last_seen TEXT DEFAULT '',
-                    status TEXT DEFAULT 'online'
+                    cpu_cores INTEGER DEFAULT 0,
+                    ram_total_mb INTEGER DEFAULT 0,
+                    storage_total_gb REAL DEFAULT 0,
+                    status TEXT DEFAULT 'offline',
+                    last_heartbeat TEXT DEFAULT '',
+                    joined_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                 )"""
             )
             await conn.execute(
-                """CREATE TABLE IF NOT EXISTS pending_writes (
+                """CREATE TABLE IF NOT EXISTS heartbeats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    target_table TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    retry_count INTEGER DEFAULT 0
+                    node_id TEXT NOT NULL REFERENCES nodes(id),
+                    cpu_usage_percent REAL DEFAULT 0,
+                    cpu_load_1m REAL DEFAULT 0,
+                    ram_available_mb INTEGER DEFAULT 0,
+                    ram_used_percent REAL DEFAULT 0,
+                    storage_free_gb REAL DEFAULT 0,
+                    recorded_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                 )"""
             )
             await conn.execute(
