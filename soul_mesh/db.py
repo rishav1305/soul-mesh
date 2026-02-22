@@ -8,6 +8,12 @@ from __future__ import annotations
 
 import aiosqlite
 
+# Table allowlist for insert() -- prevents SQL injection via table name
+_INSERTABLE_TABLES: frozenset[str] = frozenset({
+    "mesh_nodes", "pending_writes",
+    "events", "tasks", "knowledge", "chat_history",
+})
+
 
 class MeshDB:
     """Async SQLite wrapper for mesh node storage."""
@@ -60,6 +66,22 @@ class MeshDB:
         finally:
             await self._close(conn)
 
+    async def insert(self, table: str, data: dict) -> int:
+        """Insert a row and return the rowid."""
+        if table not in _INSERTABLE_TABLES:
+            raise ValueError(f"Table {table!r} not in insertable allowlist")
+        cols = list(data.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        col_names = ", ".join(cols)
+        sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
+        conn = await self._connect()
+        try:
+            cursor = await conn.execute(sql, tuple(data.values()))
+            await conn.commit()
+            return cursor.lastrowid
+        finally:
+            await self._close(conn)
+
     async def ensure_tables(self) -> None:
         """Create mesh tables if they don't exist."""
         conn = await self._connect()
@@ -79,6 +101,15 @@ class MeshDB:
                     capability REAL DEFAULT 0.0,
                     last_seen TEXT DEFAULT '',
                     status TEXT DEFAULT 'online'
+                )"""
+            )
+            await conn.execute(
+                """CREATE TABLE IF NOT EXISTS pending_writes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_table TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    retry_count INTEGER DEFAULT 0
                 )"""
             )
             await conn.commit()

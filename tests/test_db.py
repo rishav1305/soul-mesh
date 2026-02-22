@@ -66,6 +66,44 @@ class TestMeshDB:
         row = await db.fetch_one("SELECT id FROM mesh_nodes WHERE id = 'x'")
         assert row is not None
 
+    async def test_insert_returns_rowid(self, db):
+        rowid = await db.insert("mesh_nodes", {
+            "id": "node-1", "name": "test", "status": "online",
+        })
+        assert rowid is not None
+        assert rowid > 0
+
+    async def test_insert_data_retrievable(self, db):
+        await db.insert("mesh_nodes", {
+            "id": "node-2", "name": "second", "status": "offline",
+        })
+        row = await db.fetch_one(
+            "SELECT id, name, status FROM mesh_nodes WHERE id = ?", ("node-2",)
+        )
+        assert row["name"] == "second"
+        assert row["status"] == "offline"
+
+    async def test_ensure_tables_creates_pending_writes(self, db):
+        rows = await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_writes'"
+        )
+        assert len(rows) == 1
+
+    async def test_insert_pending_write(self, db):
+        rowid = await db.insert("pending_writes", {
+            "target_table": "events",
+            "payload": '{"table":"events","data":{}}',
+            "status": "pending",
+        })
+        assert rowid > 0
+        row = await db.fetch_one(
+            "SELECT target_table, status, retry_count FROM pending_writes WHERE id = ?",
+            (rowid,),
+        )
+        assert row["target_table"] == "events"
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 0
+
     async def test_in_memory_db(self):
         db = MeshDB(":memory:")
         await db.ensure_tables()
