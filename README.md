@@ -1,21 +1,33 @@
 # soul-mesh
 
-Multi-device mesh networking with hub election, WebSocket transport, and offline-tolerant sync.
+Distributed compute mesh for homelabbers -- unified RAM, storage, and CPU across devices.
 
-Soul-mesh lets multiple devices (Raspberry Pi, desktop, laptop) form a self-organizing network. One node is elected as the **hub** and acts as the central data authority. Other nodes forward writes to the hub over WebSocket, with automatic offline queueing when connectivity drops. New devices join the mesh through rate-limited link codes.
+Soul-mesh connects Raspberry Pis, laptops, desktops, and servers into a single cluster. A manually designated **hub** acts as the control plane, while **agent** nodes report live CPU, RAM, and disk metrics via WebSocket heartbeats. The hub aggregates resources across the cluster so you can see and manage all devices as one machine.
 
-## Installation
+## Quick Start
 
 ```bash
-pip install soul-mesh
+pip install soul-mesh[server]
 ```
 
-For development:
+Initialize the hub (one device):
 
 ```bash
-git clone <repo-url> && cd soul-mesh
-pip install -e ".[dev]"
-pytest
+soul-mesh init --role hub --name my-server
+```
+
+Initialize agents (every other device):
+
+```bash
+soul-mesh init --role agent --hub 192.168.1.10:8340 --secret <secret-from-hub>
+```
+
+Start the mesh:
+
+```bash
+soul-mesh serve   # on every device
+soul-mesh status  # cluster totals
+soul-mesh nodes   # list all devices
 ```
 
 Requires Python 3.11+.
@@ -25,7 +37,7 @@ Requires Python 3.11+.
 ```
                        +------------------+
                        |   PeerDiscovery  |
-                       | (Tailscale scan) |
+                       | (mDNS / Tailscale)|
                        +--------+---------+
                                 |
                                 v
@@ -43,31 +55,141 @@ Requires Python 3.11+.
                        +--------+---------+
                                 |
                     +-----------+-----------+
-                    |                       |
-             +------+------+        +------+------+
-             |  MeshSync   |        |   Linking   |
-             | (hub-proxy  |        | (link codes |
-             |  + offline  |        |  + rate     |
-             |  queue)     |        |  limiting)  |
-             +-------------+        +-------------+
+                    |           |           |
+             +------+---+ +----+----+ +----+----+
+             |   Hub    | |  Agent  | | Linking |
+             | (control | | (heart- | | (device |
+             |  plane)  | |  beat)  | |  pair)  |
+             +----------+ +---------+ +---------+
 ```
 
 ### Data flow
 
-1. **Discovery** scans the Tailscale network for peers running soul-mesh
+1. **Discovery** finds mesh peers on the LAN via mDNS (Tailscale optional)
 2. **Election** scores each node by hardware capability and elects the best one as hub
 3. **Transport** opens authenticated WebSocket connections between nodes
-4. **Sync** routes all writes through the hub; queues writes offline when the hub is unreachable
-5. **Linking** pairs new devices to the same account via short-lived codes
+4. **Hub** maintains the node registry and aggregates cluster resources from heartbeats
+5. **Agent** sends live CPU/RAM/disk snapshots to the hub every 10 seconds
+6. **Linking** pairs new devices to the same account via short-lived codes
 
 ### Design principles
 
-- **Dependency injection** -- every module takes its dependencies as constructor parameters. No global singletons.
-- **Standalone** -- zero imports from soul-os. Works independently with `pip install`.
-- **Security boundaries** -- table/column allowlists for SQL, JWT auth for transport, rate limiting for linking.
-- **Offline-first** -- non-hub nodes queue writes in SQLite and replay them when the hub returns.
+- **Hub-agent model** -- one hub runs the control plane, agents report resources via heartbeats
+- **Dependency injection** -- every module takes its dependencies as constructor parameters
+- **Standalone** -- zero imports from soul-os, works independently with `pip install`
+- **Security boundaries** -- table/column allowlists for SQL, JWT auth for transport, rate limiting for linking
+- **No psutil** -- resources collected via `/proc/meminfo`, `os.getloadavg()`, `df` subprocess
 
 ## Modules
+
+### MeshConfig (`soul_mesh.config`)
+
+YAML configuration with environment variable overrides.
+
+```python
+from soul_mesh import MeshConfig, load_config
+
+# Load from ~/.soul-mesh/config.yaml with MESH_* env overrides
+cfg = load_config()
+
+# Or build programmatically
+cfg = MeshConfig(name="my-pi", role="hub", port=8340, secret="my-secret")
+```
+
+Config file format (`~/.soul-mesh/config.yaml`):
+
+```yaml
+node:
+  name: titan-pc
+  role: hub
+  port: 8340
+  heartbeat_interval: 10
+  stale_timeout: 30
+
+auth:
+  secret: my-cluster-secret
+
+discovery:
+  mdns: true
+  tailscale: false
+```
+
+### Hub (`soul_mesh.hub`)
+
+Hub control plane -- node registry, heartbeats, resource aggregation.
+
+```python
+from soul_mesh import Hub, MeshDB
+
+db = MeshDB(":memory:")
+await db.ensure_tables()
+hub = Hub(db)
+
+# Register a node (from a heartbeat payload)
+await hub.register_node({"node_id": "abc", "name": "pi-4", "cpu": {"cores": 4}, ...})
+
+# Process subsequent heartbeats
+await hub.process_heartbeat("abc", {"cpu": {...}, "memory": {...}, "storage": {...}})
+
+# Check cluster totals
+totals = await hub.cluster_totals()
+# {"nodes_online": 3, "cpu_cores": 12, "ram_total_mb": 16384, "storage_total_gb": 1200.0}
+
+# Mark stale nodes (no heartbeat in 30s)
+stale_ids = await hub.mark_stale_nodes(timeout_seconds=30)
+```
+
+### Agent (`soul_mesh.agent`)
+
+Agent heartbeat loop -- connects to the hub and reports resource snapshots.
+
+```python
+from soul_mesh import Agent, MeshConfig
+
+cfg = MeshConfig(name="my-pi", role="agent", hub="192.168.1.10:8340", secret="s")
+agent = Agent(cfg)
+
+await agent.start()   # connects to hub, begins heartbeating
+await agent.stop()    # stops heartbeat loop, closes connection
+```
+
+The agent uses exponential backoff (1s to 60s) when the hub is unreachable.
+
+### Resources (`soul_mesh.resources`)
+
+Live system resource collection without psutil.
+
+```python
+from soul_mesh.resources import get_system_snapshot
+
+snapshot = await get_system_snapshot()
+# {
+#   "cpu": {"cores": 4, "usage_percent": 23.5, "load_avg_1m": 0.94},
+#   "memory": {"total_mb": 8192, "available_mb": 4096, "used_percent": 50.0},
+#   "storage": {"mounts": [{"path": "/", "total_gb": 500, "free_gb": 200}]}
+# }
+```
+
+Supports Linux (`/proc/meminfo`) and macOS (`sysctl`).
+
+### Server (`soul_mesh.server`)
+
+FastAPI REST endpoints for the hub. Optional dependency (`pip install soul-mesh[server]`).
+
+```python
+from soul_mesh.server import create_app
+from soul_mesh.db import MeshDB
+
+db = MeshDB("mesh.db")
+await db.ensure_tables()
+app = create_app(db)
+
+# Endpoints:
+# GET /api/mesh/health    -> {"status": "ok"}
+# GET /api/mesh/status    -> cluster totals
+# GET /api/mesh/nodes     -> list of all nodes
+# GET /api/mesh/identity  -> this node's info
+```
 
 ### NodeInfo (`soul_mesh.node`)
 
@@ -83,52 +205,9 @@ print(node.id)                # persistent UUID
 print(node.capability_score())  # 0-60 weighted score
 ```
 
-**Capability scoring:**
-- RAM: up to 40 pts (8 GiB = max)
-- Storage: up to 20 pts (500 GiB = max)
-- Battery penalty: 50% reduction if running on battery
+**Capability scoring:** RAM (up to 40 pts), Storage (up to 20 pts), battery penalty (50% reduction).
 
 Node IDs persist across restarts in `~/.soul-mesh/node_id`. Pass `node_id_path=":memory:"` for ephemeral IDs.
-
-### PeerDiscovery (`soul_mesh.discovery`)
-
-Discovers mesh peers via Tailscale with HMAC nonce verification.
-
-```python
-from soul_mesh.discovery import PeerDiscovery
-
-discovery = PeerDiscovery(
-    local_node=node,
-    discovery_interval=30,      # seconds between scans
-    shared_secret="my-secret",  # HMAC peer verification
-)
-await discovery.start()
-
-peers = discovery.get_online_peers()
-```
-
-Probes each Tailscale peer's `/api/mesh/identity` endpoint, verifies HMAC signatures, rejects peers from different accounts, and computes capability scores locally (never trusts self-reported scores).
-
-### HubElection (`soul_mesh.election`)
-
-Elects the most capable node as hub with hysteresis to prevent flip-flopping.
-
-```python
-from soul_mesh import elect_hub, HubElection
-
-# Pure function -- no side effects
-nodes = [
-    {"id": "aaa", "name": "pi-4", "capability": 35.0, "is_hub": True},
-    {"id": "bbb", "name": "desktop", "capability": 55.0, "is_hub": False},
-]
-winner = elect_hub(nodes)  # "bbb" wins (55 > 35 * 1.2)
-
-# Stateful wrapper with local-node awareness
-election = HubElection(local_node=node)
-winner = election.run(all_nodes)  # updates node.is_hub
-```
-
-The current hub keeps its role unless a challenger exceeds its capability by more than 20% (the hysteresis margin). This prevents rapid role switches when nodes have similar scores.
 
 ### MeshDB (`soul_mesh.db`)
 
@@ -143,7 +222,10 @@ await db.ensure_tables()
 # CRUD
 await db.insert("settings", {"key": "theme", "value": "dark"})
 row = await db.fetch_one("SELECT value FROM settings WHERE key = ?", ("theme",))
-rows = await db.fetch_all("SELECT * FROM mesh_nodes WHERE status = 'online'")
+rows = await db.fetch_all("SELECT * FROM nodes WHERE status = 'online'")
+
+# Upsert nodes
+await db.upsert_node({"id": "abc", "name": "pi", "host": "10.0.0.1", ...})
 
 # Transactions
 async with db.transaction() as cursor:
@@ -152,9 +234,25 @@ async with db.transaction() as cursor:
     # auto-commits on success, rolls back on exception
 ```
 
-**Tables:** `mesh_nodes`, `pending_writes`, `link_codes`, `link_attempts`, `settings`
+**Tables:** `nodes`, `heartbeats`, `link_codes`, `link_attempts`, `settings`
 
 **Security:** `insert()` validates table names against a frozen allowlist. All queries use parameterized `?` placeholders.
+
+### HubElection (`soul_mesh.election`)
+
+Elects the most capable node as hub with hysteresis to prevent flip-flopping.
+
+```python
+from soul_mesh import elect_hub
+
+nodes = [
+    {"id": "aaa", "name": "pi-4", "capability": 35.0, "is_hub": True},
+    {"id": "bbb", "name": "desktop", "capability": 55.0, "is_hub": False},
+]
+winner = elect_hub(nodes)  # "bbb" wins (55 > 35 * 1.2)
+```
+
+The current hub keeps its role unless a challenger exceeds its capability by more than 20% (the hysteresis margin).
 
 ### Auth (`soul_mesh.auth`)
 
@@ -167,11 +265,10 @@ token = create_mesh_token(
     node_id="abc-123",
     account_id="acct-456",
     secret="your-32-byte-secret-key-here!!!!!",
-    ttl=3600,  # 1 hour
+    ttl=3600,
 )
 
 claims = verify_mesh_token(token, secret="your-32-byte-secret-key-here!!!!!")
-# {"node_id": "abc-123", "account_id": "acct-456", "type": "mesh", ...}
 ```
 
 Uses HS256. Raises `jwt.ExpiredSignatureError` or `jwt.InvalidSignatureError` on failure.
@@ -184,57 +281,26 @@ Authenticated WebSocket mesh communication with automatic reconnection.
 from soul_mesh import MeshTransport
 
 transport = MeshTransport(local_node=node, db=db, secret="your-secret")
-
-# Register message handlers
 transport.on("chat", handle_chat_message)
-transport.on("mesh_write", handle_write)
+await transport.start()
 
-await transport.start()  # connects to all known peers
-
-# Send messages
 await transport.send(peer_id, "chat", {"text": "hello"})
-await transport.send_to_hub("mesh_write", {"table": "events", "data": {...}})
 await transport.broadcast("status_update", {"status": "online"})
 ```
 
-**Features:**
-- Exponential backoff reconnection (1s to 5min max)
-- 1 MiB message size limit
-- 30s WebSocket heartbeat
-- JSON message routing with type-based dispatch
-- Supports both inbound (server-accepted) and outbound (client-initiated) connections
+Features: exponential backoff reconnection (1s-5min), 1 MiB message limit, 30s heartbeat, JSON message routing.
 
-### MeshSync (`soul_mesh.sync`)
+### PeerDiscovery (`soul_mesh.discovery`)
 
-Hub-proxy write coordinator with offline queueing.
+Discovers mesh peers via Tailscale with HMAC nonce verification.
 
 ```python
-from soul_mesh import MeshSync
+from soul_mesh.discovery import PeerDiscovery
 
-sync = MeshSync(
-    local_node=node,
-    transport=transport,
-    db=db,
-    sync_interval=30,  # seconds between replay attempts
-)
-await sync.start()
-
-# Write data -- routed automatically
-await sync.write("events", {"source": "user", "event_type": "click", "payload": "{}"})
-# Hub nodes: writes locally
-# Non-hub nodes: forwards to hub, queues if hub is unreachable
+discovery = PeerDiscovery(local_node=node, shared_secret="my-secret")
+await discovery.start()
+peers = discovery.get_online_peers()
 ```
-
-**Offline queue:**
-- SQLite-backed `pending_writes` table
-- Max 10,000 pending entries (oldest dropped when full)
-- Batch replay of 50 writes per cycle
-- Max 10 retries per write before marking as failed
-
-**Security:**
-- Table allowlist: `events`, `tasks`, `knowledge`, `chat_history`
-- Per-table column allowlists filter unauthorized fields
-- Cross-account writes rejected via peer account_id verification
 
 ### Linking (`soul_mesh.linking`)
 
@@ -246,49 +312,75 @@ from soul_mesh import generate_link_code, redeem_link_code, get_or_create_accoun
 # On the existing device
 account_id = await get_or_create_account_id(db)
 code = await generate_link_code(db, account_id)
-# Share this 16-character code with the new device
 
 # On the new device
 result = await redeem_link_code(db, code, node_id="new-node-id", ip_address="192.168.1.5")
-if result:
-    print(f"Linked to account: {result}")
 ```
 
-**Security:**
-- Codes expire after 10 minutes
-- Per-IP rate limit: 5 attempts per 15 minutes
-- Global rate limit: 50 attempts per 15 minutes
-- Rate limit checks are transactional (atomic read + insert)
-- Expired codes are cleaned up on each generation
+**Security:** codes expire in 10 minutes, per-IP limit of 5 attempts per 15 minutes, global limit of 50 attempts per 15 minutes.
+
+## CLI
+
+```
+soul-mesh init    Initialize a new node (hub or agent)
+soul-mesh serve   Start the hub server or agent heartbeat loop
+soul-mesh status  Show cluster resource totals
+soul-mesh nodes   List all registered nodes
+```
 
 ## Configuration
 
-Environment variables (all optional):
+### Config file (`~/.soul-mesh/config.yaml`)
+
+Generated by `soul-mesh init`. See the MeshConfig section above for format.
+
+### Environment variables
+
+All optional, override config file values:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MESH_NODE_NAME` | hostname | Human-readable node name |
+| `MESH_ROLE` | `agent` | Node role: `hub` or `agent` |
 | `MESH_PORT` | `8340` | Port for mesh API |
-| `MESH_DISCOVERY_INTERVAL` | `30` | Seconds between discovery scans |
-| `MESH_SHARED_SECRET` | `""` | Shared secret for HMAC peer verification |
+| `MESH_HUB` | `""` | Hub address (`host:port`) |
+| `MESH_SECRET` | `""` | Shared cluster secret for JWT auth |
 
-## Testing
+## Development
 
 ```bash
-pip install -e ".[dev]"
+git clone <repo-url> && cd soul-mesh
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,server]"
 pytest -v
 ```
 
-100 tests across 6 test files:
+179 tests across 11 test files:
 
 | Test file | Tests | Covers |
 |-----------|-------|--------|
-| test_election.py | 16 | Hub election, hysteresis, tie-breaking |
-| test_db.py | 17 | CRUD, insert allowlist, transactions, table creation |
-| test_auth.py | 9 | JWT creation, verification, expiry, invalid tokens |
-| test_transport.py | 20 | WebSocket connections, message routing, send/broadcast |
-| test_sync.py | 20 | Hub/non-hub writes, offline queue, replay, security checks |
-| test_linking.py | 18 | Code generation, redemption, rate limiting, account management |
+| test_config.py | 24 | YAML loading, env overrides, defaults |
+| test_resources.py | 20 | CPU, memory, storage collection |
+| test_transport.py | 18 | WebSocket connections, message routing |
+| test_db.py | 17 | CRUD, insert allowlist, transactions, upsert |
+| test_hub.py | 16 | Node registry, heartbeats, stale detection, aggregation |
+| test_election.py | 15 | Hub election, hysteresis, tie-breaking |
+| test_linking.py | 14 | Code generation, redemption, rate limiting |
+| test_agent.py | 13 | Heartbeat building, start/stop lifecycle |
+| test_auth.py | 8 | JWT creation, verification, expiry |
+| test_server.py | 7 | REST endpoints (health, status, nodes, identity) |
+| test_cli.py | 7 | init, status, nodes commands |
+
+## Roadmap
+
+Soul-mesh is built in layers, each independently useful:
+
+| Layer | What | Status |
+|-------|------|--------|
+| 0 | Mesh Core (discovery, auth, transport, heartbeats) | Shipped (v0.2.0) |
+| 1 | Server (FastAPI REST API, CLI) | Shipped (v0.2.0) |
+| 2 | Task Engine (distribute work across nodes) | Planned |
+| 3 | Storage (unified filesystem across nodes) | Planned |
+| 4 | Dashboard (web UI for cluster management) | Planned |
 
 ## License
 
