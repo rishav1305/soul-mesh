@@ -207,6 +207,7 @@ class Hub:
         list[dict]
             Heartbeat rows ordered by ``recorded_at`` descending.
         """
+        limit = max(1, limit)
         return await self._db.fetch_all(
             "SELECT * FROM heartbeats WHERE node_id = ? ORDER BY recorded_at DESC LIMIT ?",
             (node_id, limit),
