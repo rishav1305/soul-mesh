@@ -7,6 +7,8 @@ so we import it inside ``create_app`` to avoid hard failures when only
 the core library is used.
 """
 
+import asyncio
+
 import structlog
 
 from soul_mesh.auth import verify_mesh_token
@@ -17,7 +19,19 @@ from soul_mesh.node import NodeInfo
 logger = structlog.get_logger("soul-mesh.server")
 
 
-def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = ""):
+async def _stale_sweep_loop(hub, interval: int) -> None:
+    """Periodically mark nodes with no recent heartbeat as stale."""
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await hub.mark_stale_nodes(timeout_seconds=interval)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning("stale_sweep_error", error=str(exc))
+
+
+def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", stale_interval: int = 30):
     """Create and return a FastAPI application wired to the given database.
 
     Parameters
@@ -31,9 +45,21 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = ""):
         HMAC secret for verifying JWT mesh tokens on the WebSocket endpoint.
         Defaults to empty string (WebSocket auth will reject all tokens).
     """
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-    app = FastAPI(title="soul-mesh", version="0.2.0")
+    @asynccontextmanager
+    async def lifespan(app):
+        task = asyncio.create_task(_stale_sweep_loop(app.state.hub, stale_interval))
+        yield
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    app = FastAPI(title="soul-mesh", version="0.2.0", lifespan=lifespan)
 
     # Store shared state on the app so route handlers can access it.
     app.state.db = db

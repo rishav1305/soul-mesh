@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
+
 import pytest
 import httpx
 
@@ -225,3 +227,24 @@ class TestWebSocketEndpoint:
         # Should have 2 heartbeat rows
         heartbeats = await db.fetch_all("SELECT * FROM heartbeats WHERE node_id = 'node-2'")
         assert len(heartbeats) == 2
+
+
+class TestStaleSweep:
+    @pytest.fixture
+    async def db(self, tmp_path):
+        db = MeshDB(str(tmp_path / "test.db"))
+        await db.ensure_tables()
+        return db
+
+    async def test_stale_sweep_marks_old_nodes(self, db):
+        """Nodes with old heartbeats get marked stale by the sweep."""
+        hub = Hub(db)
+        await db.upsert_node({"id": "old-node", "name": "stale-pi"})
+        old_time = (datetime.now(timezone.utc) - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await db.execute("UPDATE nodes SET status = 'online', last_heartbeat = ? WHERE id = 'old-node'", (old_time,))
+
+        stale = await hub.mark_stale_nodes(timeout_seconds=30)
+        assert "old-node" in stale
+
+        row = await db.fetch_one("SELECT status FROM nodes WHERE id = 'old-node'")
+        assert row["status"] == "stale"
