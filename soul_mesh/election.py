@@ -130,49 +130,49 @@ class HubElection:
 
         return winner_id
 
-    async def elect(self, db_path: str | None = None) -> str:
-        """Run election with optional SQLite persistence.
-
-        If ``db_path`` is provided, reads nodes from and writes
-        the result to the ``mesh_nodes`` table.
+    async def elect(self, db=None) -> str:
+        """Run election with optional MeshDB persistence.
 
         Parameters
         ----------
-        db_path : str | None
-            Path to the SQLite database. If None, uses only the local
-            node and returns its id.
-
-        Returns
-        -------
-        str
-            The winning node's id.
+        db : MeshDB | None
+            Database instance. If None, uses only the local node.
         """
-        if db_path is None:
+        if db is None:
             self._local.is_hub = True
             return self._local.id
 
-        import aiosqlite
+        rows = await db.fetch_all(
+            "SELECT id, name, role, ram_total_mb, storage_total_gb "
+            "FROM nodes WHERE status = 'online'"
+        )
 
-        async with aiosqlite.connect(db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT id, name, capability, is_hub FROM mesh_nodes "
-                "WHERE status = 'online'"
-            )
-            all_nodes = [dict(row) for row in await cursor.fetchall()]
+        if not rows:
+            self._local.is_hub = True
+            return self._local.id
 
-            if not all_nodes:
-                self._local.is_hub = True
-                await self._local.register(db_path)
-                return self._local.id
+        all_nodes = []
+        for row in rows:
+            ram = row.get("ram_total_mb", 0)
+            storage = row.get("storage_total_gb", 0)
+            cap = min(ram / 8192, 1.0) * 40 + min(storage / 500, 1.0) * 20
+            all_nodes.append({
+                "id": row["id"],
+                "name": row.get("name", ""),
+                "capability": round(cap, 2),
+                "is_hub": row.get("role") == "hub",
+            })
 
-            winner_id = elect_hub(all_nodes)
+        winner_id = elect_hub(all_nodes)
 
-            await db.execute("UPDATE mesh_nodes SET is_hub = 0 WHERE is_hub = 1")
-            await db.execute(
-                "UPDATE mesh_nodes SET is_hub = 1 WHERE id = ?", (winner_id,)
-            )
-            await db.commit()
+        await db.execute(
+            "UPDATE nodes SET role = 'agent' WHERE role = 'hub' AND id != ?",
+            (winner_id,),
+        )
+        await db.execute(
+            "UPDATE nodes SET role = 'hub' WHERE id = ?",
+            (winner_id,),
+        )
 
         was_hub = self._local.is_hub
         self._local.is_hub = winner_id == self._local.id

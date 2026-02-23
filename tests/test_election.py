@@ -156,3 +156,66 @@ class TestHubElection:
         result = election.run(all_nodes)
         assert result == "remote-1"
         assert node.is_hub is False
+
+
+from soul_mesh.db import MeshDB
+
+
+class TestHubElectionWithDB:
+    """Tests for HubElection.elect() with real MeshDB."""
+
+    @pytest.fixture
+    async def db(self, tmp_path):
+        db = MeshDB(str(tmp_path / "test.db"))
+        await db.ensure_tables()
+        return db
+
+    def _make_node(self, node_id="local-1", name="local", cap=40.0):
+        class MockNode:
+            def __init__(self):
+                self.id = node_id
+                self.name = name
+                self.is_hub = False
+                self._cap = cap
+
+            def capability_score(self):
+                return self._cap
+
+        return MockNode()
+
+    async def test_elect_no_db_becomes_hub(self):
+        node = self._make_node()
+        election = HubElection(node)
+        result = await election.elect(db=None)
+        assert result == node.id
+        assert node.is_hub is True
+
+    async def test_elect_with_db_empty_becomes_hub(self, db):
+        node = self._make_node()
+        election = HubElection(node)
+        result = await election.elect(db=db)
+        assert result == node.id
+        assert node.is_hub is True
+
+    async def test_elect_with_db_picks_highest_capability(self, db):
+        await db.upsert_node({"id": "node-a", "name": "weak", "ram_total_mb": 2048, "storage_total_gb": 100})
+        await db.execute("UPDATE nodes SET status = 'online' WHERE id = 'node-a'")
+        await db.upsert_node({"id": "node-b", "name": "strong", "ram_total_mb": 8192, "storage_total_gb": 500})
+        await db.execute("UPDATE nodes SET status = 'online' WHERE id = 'node-b'")
+
+        node = self._make_node(node_id="node-a", cap=10.0)
+        election = HubElection(node)
+        result = await election.elect(db=db)
+        assert result == "node-b"
+        assert node.is_hub is False
+
+    async def test_elect_with_db_hysteresis(self, db):
+        await db.upsert_node({"id": "hub-1", "name": "current", "ram_total_mb": 4096, "storage_total_gb": 200})
+        await db.execute("UPDATE nodes SET status = 'online', role = 'hub' WHERE id = 'hub-1'")
+        await db.upsert_node({"id": "chal-1", "name": "challenger", "ram_total_mb": 4500, "storage_total_gb": 220})
+        await db.execute("UPDATE nodes SET status = 'online' WHERE id = 'chal-1'")
+
+        node = self._make_node(node_id="hub-1", cap=28.0)
+        election = HubElection(node)
+        result = await election.elect(db=db)
+        assert result == "hub-1"
