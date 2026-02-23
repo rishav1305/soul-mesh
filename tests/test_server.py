@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import httpx
 
+from soul_mesh.auth import create_mesh_token
 from soul_mesh.db import MeshDB
 from soul_mesh.hub import Hub
 from soul_mesh.node import NodeInfo
@@ -133,3 +134,94 @@ class TestIdentity:
         assert data["port"] == 8340
         assert data["platform"] == "linux"
         assert data["arch"] == "aarch64"
+
+
+class TestWebSocketEndpoint:
+    """Tests for the /api/mesh/ws WebSocket heartbeat endpoint."""
+
+    @pytest.fixture
+    async def db(self, tmp_path):
+        db = MeshDB(str(tmp_path / "test.db"))
+        await db.ensure_tables()
+        return db
+
+    @pytest.fixture
+    def app(self, db):
+        return create_app(db, secret="test-secret-key-32-bytes-long!!!")
+
+    async def test_ws_rejects_missing_token(self, app):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        client = TestClient(app)
+        with client.websocket_connect("/api/mesh/ws") as ws:
+            # Server accepts then immediately closes with 4001
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_json()
+            assert exc_info.value.code == 4001
+
+    async def test_ws_rejects_invalid_token(self, app):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        client = TestClient(app)
+        with client.websocket_connect("/api/mesh/ws?token=bad-token") as ws:
+            # Server accepts then immediately closes with 4003
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_json()
+            assert exc_info.value.code == 4003
+
+    async def test_ws_accepts_valid_token_and_heartbeat(self, app, db):
+        from starlette.testclient import TestClient
+
+        token = create_mesh_token("node-1", "acct-1", "test-secret-key-32-bytes-long!!!")
+        client = TestClient(app)
+        with client.websocket_connect(f"/api/mesh/ws?token={token}") as ws:
+            heartbeat = {
+                "node_id": "node-1",
+                "name": "test-pi",
+                "host": "10.0.0.5",
+                "port": 8340,
+                "platform": "linux",
+                "arch": "aarch64",
+                "cpu": {"cores": 4, "usage_percent": 15.0, "load_avg_1m": 0.5},
+                "memory": {"total_mb": 4096, "available_mb": 2048, "used_percent": 50.0},
+                "storage": {"mounts": [{"path": "/", "total_gb": 64, "free_gb": 30}]},
+            }
+            ws.send_json(heartbeat)
+            response = ws.receive_json()
+            assert response["status"] == "ok"
+
+        # Verify node was registered in DB
+        nodes = await db.fetch_all("SELECT * FROM nodes WHERE id = 'node-1'")
+        assert len(nodes) == 1
+        assert nodes[0]["name"] == "test-pi"
+        assert nodes[0]["status"] == "online"
+        assert nodes[0]["cpu_cores"] == 4
+
+    async def test_ws_multiple_heartbeats(self, app, db):
+        from starlette.testclient import TestClient
+
+        token = create_mesh_token("node-2", "acct-1", "test-secret-key-32-bytes-long!!!")
+        client = TestClient(app)
+        with client.websocket_connect(f"/api/mesh/ws?token={token}") as ws:
+            heartbeat = {
+                "node_id": "node-2",
+                "name": "pi",
+                "host": "10.0.0.6",
+                "port": 8340,
+                "platform": "linux",
+                "arch": "aarch64",
+                "cpu": {"cores": 4, "usage_percent": 10.0, "load_avg_1m": 0.3},
+                "memory": {"total_mb": 2048, "available_mb": 1024, "used_percent": 50.0},
+                "storage": {"mounts": [{"path": "/", "total_gb": 32, "free_gb": 20}]},
+            }
+            ws.send_json(heartbeat)
+            ws.receive_json()
+            # Second heartbeat
+            heartbeat["cpu"]["usage_percent"] = 50.0
+            ws.send_json(heartbeat)
+            resp2 = ws.receive_json()
+            assert resp2["status"] == "ok"
+
+        # Should have 2 heartbeat rows
+        heartbeats = await db.fetch_all("SELECT * FROM heartbeats WHERE node_id = 'node-2'")
+        assert len(heartbeats) == 2
