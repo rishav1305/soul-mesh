@@ -109,6 +109,11 @@ class Agent:
                 "exit_code": proc.returncode,
             }
         except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
             return {
                 "type": "command_result",
                 "cmd_id": cmd_id,

@@ -112,6 +112,9 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
 
     @app.post("/api/mesh/run")
     async def run_command_endpoint(req: RunCommandRequest):
+        # WARNING: This endpoint grants shell access to connected nodes.
+        # It is intended for trusted LAN use only (dashboard remote shell).
+        # Future: add JWT auth or API key requirement.
         try:
             result = await app.state.relay.send_command(req.node_id, req.command)
             return result
@@ -155,7 +158,11 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
 
                 # Handle command results from the agent before heartbeat processing.
                 if data.get("type") == "command_result":
-                    app.state.relay.deliver_result(data["cmd_id"], data)
+                    cmd_id = data.get("cmd_id")
+                    if cmd_id:
+                        app.state.relay.deliver_result(cmd_id, data)
+                    else:
+                        logger.warning("command_result_missing_cmd_id")
                     await websocket.send_json({"status": "ok"})
                     continue
 
