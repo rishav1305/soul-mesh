@@ -34,14 +34,14 @@ class MockDB:
 
     async def fetch_one(self, sql, params=()):
         for n in self._nodes:
-            if n.get("is_hub") and n.get("status") == "online":
+            if n.get("role") == "hub" and n.get("status") == "online":
                 return n
         return None
 
-    def add_node(self, node_id, host="127.0.0.1", port=8340, is_hub=False):
+    def add_node(self, node_id, host="127.0.0.1", port=8340, role="agent"):
         self._nodes.append({
             "id": node_id, "host": host, "port": port,
-            "is_hub": is_hub, "status": "online",
+            "role": role, "status": "online",
         })
 
 
@@ -194,7 +194,7 @@ class TestSend:
     async def test_send_to_hub(self):
         node = MockNode()
         db = MockDB()
-        db.add_node("hub-1", is_hub=True)
+        db.add_node("hub-1", role="hub")
         transport = MeshTransport(node, db, "secret")
         ws = MockWebSocket()
         transport._connections["hub-1"] = ws

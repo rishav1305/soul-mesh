@@ -51,7 +51,7 @@ class MeshTransport:
     async def start(self) -> None:
         self._running = True
         peers = await self._db.fetch_all(
-            "SELECT id, host, port FROM mesh_nodes "
+            "SELECT id, host, port FROM nodes "
             "WHERE id != ? AND status = 'online'",
             (self._local.id,),
         )
@@ -175,7 +175,7 @@ class MeshTransport:
 
     async def send_to_hub(self, msg_type: str, payload: Any) -> None:
         hub = await self._db.fetch_one(
-            "SELECT id FROM mesh_nodes WHERE is_hub = 1 AND status = 'online'"
+            "SELECT id FROM nodes WHERE role = 'hub' AND status = 'online'"
         )
         if not hub:
             raise ConnectionError("No hub available")
