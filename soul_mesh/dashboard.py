@@ -16,6 +16,9 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Sparkline, Static
 
 import httpx
+import structlog
+
+logger = structlog.get_logger("soul-mesh.dashboard")
 from rich.text import Text
 
 
@@ -278,15 +281,15 @@ class MeshDashboard(App):
             resp = await self._client.get("/api/mesh/nodes")
             resp.raise_for_status()
             self._nodes = resp.json()
-        except (httpx.HTTPError, httpx.StreamError):
-            pass  # Hub unreachable -- keep showing stale data
+        except (httpx.HTTPError, httpx.StreamError) as exc:
+            logger.debug("poll_nodes_failed", error=str(exc))
 
         try:
             status_resp = await self._client.get("/api/mesh/status")
             status_resp.raise_for_status()
             self._status = status_resp.json()
-        except (httpx.HTTPError, httpx.StreamError):
-            pass
+        except (httpx.HTTPError, httpx.StreamError) as exc:
+            logger.debug("poll_status_failed", error=str(exc))
 
         # Fetch latest heartbeat for each node to get live cpu/ram %
         for node in self._nodes:
@@ -304,8 +307,8 @@ class MeshDashboard(App):
                 if heartbeats:
                     node["_cpu_usage_percent"] = heartbeats[0].get("cpu_usage_percent", 0.0)
                     node["_ram_used_percent"] = heartbeats[0].get("ram_used_percent", 0.0)
-            except (httpx.HTTPError, httpx.StreamError):
-                pass
+            except (httpx.HTTPError, httpx.StreamError) as exc:
+                logger.debug("poll_heartbeats_failed", node_id=nid, error=str(exc))
 
         self._update_active_screen()
 
