@@ -354,21 +354,23 @@ pip install -e ".[dev,server]"
 pytest -v
 ```
 
-179 tests across 11 test files:
+203 tests across 12 test files:
 
 | Test file | Tests | Covers |
 |-----------|-------|--------|
 | test_config.py | 24 | YAML loading, env overrides, defaults |
 | test_resources.py | 20 | CPU, memory, storage collection |
-| test_transport.py | 18 | WebSocket connections, message routing |
+| test_transport.py | 20 | WebSocket connections, message routing |
+| test_election.py | 20 | Hub election, hysteresis, tie-breaking, MeshDB persistence |
 | test_db.py | 17 | CRUD, insert allowlist, transactions, upsert |
 | test_hub.py | 16 | Node registry, heartbeats, stale detection, aggregation |
-| test_election.py | 15 | Hub election, hysteresis, tie-breaking |
+| test_server.py | 14 | REST endpoints, WebSocket heartbeats, stale sweep |
 | test_linking.py | 14 | Code generation, redemption, rate limiting |
 | test_agent.py | 13 | Heartbeat building, start/stop lifecycle |
+| test_discovery.py | 11 | mDNS announcer, Tailscale peer discovery |
 | test_auth.py | 8 | JWT creation, verification, expiry |
-| test_server.py | 7 | REST endpoints (health, status, nodes, identity) |
 | test_cli.py | 7 | init, status, nodes commands |
+| test_integration.py | 2 | Agent-to-hub end-to-end heartbeat flow |
 
 ## Roadmap
 
