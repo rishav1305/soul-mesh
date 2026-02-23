@@ -1,25 +1,87 @@
 """Textual TUI dashboard for soul-mesh.
 
-Two screens:
+Three screens:
 - **Cluster Overview** (default): live-updating node table with sparklines.
 - **Node Detail**: drill-down for a selected node with full specs and graphs.
+- **Alerts**: scrolling log of auto-generated alerts from state changes.
 
 Launch via ``soul-mesh dashboard --hub http://localhost:8340``.
 """
 
 from __future__ import annotations
 
+import collections
+from datetime import datetime, timezone
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Sparkline, Static
+from textual.widgets import DataTable, Footer, Header, RichLog, Sparkline, Static
 
 import httpx
 import structlog
 
 logger = structlog.get_logger("soul-mesh.dashboard")
 from rich.text import Text
+
+
+# ---------------------------------------------------------------------------
+# Alert generation (pure function)
+# ---------------------------------------------------------------------------
+
+def generate_alerts(old_nodes: list[dict], new_nodes: list[dict]) -> list[dict]:
+    """Compare two snapshots of node data and return a list of alert dicts.
+
+    Each alert has keys: ``timestamp``, ``severity``, ``message``.
+    """
+    alerts: list[dict] = []
+    old_by_id = {n["id"]: n for n in old_nodes if "id" in n}
+    new_by_id = {n["id"]: n for n in new_nodes if "id" in n}
+
+    for nid, new_node in new_by_id.items():
+        name = new_node.get("name", nid)
+        old_node = old_by_id.get(nid)
+
+        if old_node is None:
+            # New node appeared
+            alerts.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "severity": "info",
+                "message": f"New node appeared: {name}",
+            })
+            continue
+
+        old_status = old_node.get("status", "offline")
+        new_status = new_node.get("status", "offline")
+
+        # Node went stale
+        if old_status == "online" and new_status == "stale":
+            alerts.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "severity": "warning",
+                "message": f"Node went stale: {name}",
+            })
+
+        # Node came online
+        if old_status in ("stale", "offline") and new_status == "online":
+            alerts.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "severity": "info",
+                "message": f"Node came online: {name}",
+            })
+
+        # High RAM usage crossing above 85%
+        old_ram = old_node.get("_ram_used_percent", 0.0)
+        new_ram = new_node.get("_ram_used_percent", 0.0)
+        if old_ram <= 85.0 and new_ram > 85.0:
+            alerts.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "severity": "warning",
+                "message": f"High RAM usage on {name}: {new_ram:.1f}%",
+            })
+
+    return alerts
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +275,56 @@ class NodeDetail(Screen):
 
 
 # ---------------------------------------------------------------------------
+# Alerts screen
+# ---------------------------------------------------------------------------
+
+_SEVERITY_STYLE = {
+    "info": "green",
+    "warning": "yellow",
+    "critical": "red",
+}
+
+
+class AlertsScreen(Screen):
+    """Scrolling alert log with colour-coded severity."""
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("c", "clear_alerts", "Clear"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static("Alerts: 0", id="alert-header")
+        yield RichLog(id="alert-log", highlight=True, markup=True)
+        yield Footer()
+
+    def update_alerts(self, alerts: list[dict]) -> None:
+        """Rewrite the alert log from the current deque contents."""
+        header = self.query_one("#alert-header", Static)
+        header.update(f"Alerts: {len(alerts)}")
+
+        log = self.query_one("#alert-log", RichLog)
+        log.clear()
+        for alert in alerts:
+            style = _SEVERITY_STYLE.get(alert.get("severity", "info"), "white")
+            ts = alert.get("timestamp", "")
+            sev = alert.get("severity", "info").upper()
+            msg = alert.get("message", "")
+            log.write(Text(f"[{ts}] {sev}: {msg}", style=style))
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_refresh(self) -> None:
+        self.app.force_refresh()
+
+    def action_clear_alerts(self) -> None:
+        self.app.clear_alerts()
+
+
+# ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
 
@@ -258,6 +370,7 @@ class MeshDashboard(App):
         Binding("q", "quit", "Quit"),
         Binding("1", "show_overview", "Overview"),
         Binding("2", "show_detail", "Detail"),
+        Binding("3", "show_alerts", "Alerts"),
     ]
 
     def __init__(self, hub_url: str = "http://localhost:8340") -> None:
@@ -268,6 +381,7 @@ class MeshDashboard(App):
         self._status: dict = {}
         self._heartbeat_cache: dict[str, list[dict]] = {}
         self._selected_node_id: str | None = None
+        self._alerts: collections.deque[dict] = collections.deque(maxlen=100)
 
     def on_mount(self) -> None:
         self.push_screen(ClusterOverview())
@@ -277,6 +391,8 @@ class MeshDashboard(App):
 
     async def _poll_data(self) -> None:
         """Fetch nodes and status from the hub API."""
+        old_nodes = list(self._nodes)  # snapshot before update
+
         try:
             resp = await self._client.get("/api/mesh/nodes")
             resp.raise_for_status()
@@ -310,6 +426,11 @@ class MeshDashboard(App):
             except (httpx.HTTPError, httpx.StreamError) as exc:
                 logger.debug("poll_heartbeats_failed", node_id=nid, error=str(exc))
 
+        # Generate alerts from state changes
+        new_alerts = generate_alerts(old_nodes, self._nodes)
+        for alert in new_alerts:
+            self._alerts.append(alert)
+
         self._update_active_screen()
 
     def _update_active_screen(self) -> None:
@@ -335,6 +456,9 @@ class MeshDashboard(App):
             heartbeats = self._heartbeat_cache.get(nid, [])
             screen.update_node(node, heartbeats)
 
+        elif isinstance(screen, AlertsScreen):
+            screen.update_alerts(list(self._alerts))
+
     def show_node_detail(self, node_id: str) -> None:
         """Switch to the Node Detail screen for a given node."""
         self._selected_node_id = node_id
@@ -354,6 +478,18 @@ class MeshDashboard(App):
         """Switch to Node Detail for the last-selected node (if any)."""
         if self._selected_node_id and not isinstance(self.screen, NodeDetail):
             self.push_screen(NodeDetail(self._selected_node_id))
+
+    def action_show_alerts(self) -> None:
+        """Switch to the Alerts screen."""
+        if not isinstance(self.screen, AlertsScreen):
+            self.push_screen(AlertsScreen())
+
+    def clear_alerts(self) -> None:
+        """Clear all stored alerts."""
+        self._alerts.clear()
+        screen = self.screen
+        if isinstance(screen, AlertsScreen):
+            screen.update_alerts([])
 
     async def action_quit(self) -> None:
         await self._client.aclose()
