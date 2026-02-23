@@ -120,6 +120,40 @@ async def test_dashboard_has_alerts_deque():
     assert app._alerts.maxlen == 100
 
 
+async def test_remote_shell_screen_exists():
+    from soul_mesh.dashboard import RemoteShellScreen
+
+    assert RemoteShellScreen is not None
+
+
+async def test_remote_shell_screen_is_screen_subclass():
+    from soul_mesh.dashboard import RemoteShellScreen
+    from textual.screen import Screen
+
+    assert issubclass(RemoteShellScreen, Screen)
+
+
+async def test_remote_shell_screen_has_escape_binding():
+    from soul_mesh.dashboard import RemoteShellScreen
+
+    binding_keys = [b.key for b in RemoteShellScreen.BINDINGS]
+    assert "escape" in binding_keys
+
+
+async def test_dashboard_has_shell_keybinding():
+    from soul_mesh.dashboard import MeshDashboard
+
+    binding_keys = [b.key for b in MeshDashboard.BINDINGS]
+    assert "4" in binding_keys
+
+
+async def test_dashboard_action_show_shell_exists():
+    from soul_mesh.dashboard import MeshDashboard
+
+    app = MeshDashboard(hub_url="http://localhost:8340")
+    assert callable(getattr(app, "action_show_shell", None))
+
+
 def test_dashboard_cli_command_registered():
     """Ensure the dashboard command is registered in the CLI group."""
     from soul_mesh.cli import main

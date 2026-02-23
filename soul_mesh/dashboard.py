@@ -1,9 +1,10 @@
 """Textual TUI dashboard for soul-mesh.
 
-Three screens:
+Four screens:
 - **Cluster Overview** (default): live-updating node table with sparklines.
 - **Node Detail**: drill-down for a selected node with full specs and graphs.
 - **Alerts**: scrolling log of auto-generated alerts from state changes.
+- **Remote Shell**: execute commands on remote nodes via the hub API.
 
 Launch via ``soul-mesh dashboard --hub http://localhost:8340``.
 """
@@ -17,7 +18,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, RichLog, Sparkline, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    RichLog,
+    Select,
+    Sparkline,
+    Static,
+)
 
 import httpx
 import structlog
@@ -325,6 +335,96 @@ class AlertsScreen(Screen):
 
 
 # ---------------------------------------------------------------------------
+# Remote Shell screen
+# ---------------------------------------------------------------------------
+
+class RemoteShellScreen(Screen):
+    """Execute commands on remote nodes via the hub API."""
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static("Remote Shell", id="shell-title")
+        yield Select(
+            options=[],
+            prompt="Select a node...",
+            id="node-select",
+        )
+        yield Input(placeholder="Enter command...", id="cmd-input")
+        yield Static("", id="shell-status")
+        yield RichLog(id="shell-output", highlight=True, markup=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Populate the node selector from the app's node list."""
+        nodes: list[dict] = getattr(self.app, "_nodes", [])
+        options = [
+            (node.get("name", node.get("id", "unknown")), node.get("id", ""))
+            for node in nodes
+            if node.get("id")
+        ]
+        select = self.query_one("#node-select", Select)
+        select.set_options(options)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle command submission -- POST to /api/mesh/run."""
+        command = event.value.strip()
+        if not command:
+            return
+
+        select = self.query_one("#node-select", Select)
+        node_id = select.value
+        if node_id is Select.BLANK:
+            status = self.query_one("#shell-status", Static)
+            status.update(Text("No node selected.", style="red"))
+            return
+
+        log = self.query_one("#shell-output", RichLog)
+        status = self.query_one("#shell-status", Static)
+        status.update(Text("Running...", style="yellow"))
+
+        # Clear input for next command
+        cmd_input = self.query_one("#cmd-input", Input)
+        cmd_input.value = ""
+
+        # Log the command being run
+        log.write(Text(f"$ {command}", style="bold"))
+
+        client: httpx.AsyncClient = getattr(self.app, "_client")
+        try:
+            resp = await client.post(
+                "/api/mesh/run",
+                json={"node_id": str(node_id), "command": command},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            stdout = data.get("stdout", "")
+            stderr = data.get("stderr", "")
+            exit_code = data.get("exit_code", -1)
+
+            if stdout:
+                log.write(stdout)
+            if stderr:
+                log.write(Text(stderr, style="red"))
+
+            if exit_code == 0:
+                status.update(Text(f"Exit code: {exit_code}", style="green"))
+            else:
+                status.update(Text(f"Exit code: {exit_code}", style="red"))
+
+        except (httpx.HTTPError, httpx.StreamError) as exc:
+            log.write(Text(f"Error: {exc}", style="red"))
+            status.update(Text("Request failed.", style="red"))
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+
+# ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
 
@@ -364,6 +464,28 @@ class MeshDashboard(App):
         height: 1;
         color: $text-muted;
     }
+    #shell-title {
+        dock: top;
+        height: 1;
+        background: $primary-background;
+        color: $text;
+        padding: 0 1;
+    }
+    #node-select {
+        margin: 1 1 0 1;
+    }
+    #cmd-input {
+        margin: 0 1;
+    }
+    #shell-status {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
+    #shell-output {
+        height: 1fr;
+        margin: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -371,6 +493,7 @@ class MeshDashboard(App):
         Binding("1", "show_overview", "Overview"),
         Binding("2", "show_detail", "Detail"),
         Binding("3", "show_alerts", "Alerts"),
+        Binding("4", "show_shell", "Shell"),
     ]
 
     def __init__(self, hub_url: str = "http://localhost:8340") -> None:
@@ -483,6 +606,11 @@ class MeshDashboard(App):
         """Switch to the Alerts screen."""
         if not isinstance(self.screen, AlertsScreen):
             self.push_screen(AlertsScreen())
+
+    def action_show_shell(self) -> None:
+        """Switch to the Remote Shell screen."""
+        if not isinstance(self.screen, RemoteShellScreen):
+            self.push_screen(RemoteShellScreen())
 
     def clear_alerts(self) -> None:
         """Clear all stored alerts."""
