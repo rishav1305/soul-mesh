@@ -7,7 +7,6 @@ the healing module) and reads /sys/class/power_supply for battery state.
 from __future__ import annotations
 
 import asyncio
-import logging
 import platform as _platform
 import uuid as _uuid
 from pathlib import Path
@@ -118,69 +117,6 @@ class NodeInfo:
             "account_id": self.account_id,
         }
 
-    async def register(self, db_path: str | None = None) -> None:
-        """Upsert this node in the ``mesh_nodes`` table.
-
-        Parameters
-        ----------
-        db_path : str | None
-            Path to the SQLite database. If None, registration is a no-op.
-        """
-        if db_path is None:
-            return
-
-        import aiosqlite
-
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute(
-                """CREATE TABLE IF NOT EXISTS mesh_nodes (
-                    id TEXT PRIMARY KEY,
-                    account_id TEXT DEFAULT '',
-                    name TEXT DEFAULT '',
-                    host TEXT DEFAULT '',
-                    port INTEGER DEFAULT 8340,
-                    platform TEXT DEFAULT '',
-                    arch TEXT DEFAULT '',
-                    ram_mb INTEGER DEFAULT 0,
-                    storage_mb INTEGER DEFAULT 0,
-                    is_hub INTEGER DEFAULT 0,
-                    capability REAL DEFAULT 0.0,
-                    last_seen TEXT DEFAULT '',
-                    status TEXT DEFAULT 'online'
-                )"""
-            )
-            await db.execute(
-                """INSERT INTO mesh_nodes
-                   (id, account_id, name, host, port, platform, arch,
-                    ram_mb, storage_mb, is_hub, capability, last_seen, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'online')
-                   ON CONFLICT(id) DO UPDATE SET
-                     name       = excluded.name,
-                     host       = excluded.host,
-                     port       = excluded.port,
-                     ram_mb     = excluded.ram_mb,
-                     storage_mb = excluded.storage_mb,
-                     is_hub     = excluded.is_hub,
-                     capability = excluded.capability,
-                     last_seen  = excluded.last_seen,
-                     status     = excluded.status
-                """,
-                (
-                    self.id,
-                    self.account_id,
-                    self.name,
-                    self.host,
-                    self.port,
-                    self.platform,
-                    self.arch,
-                    self.ram_mb,
-                    self.storage_mb,
-                    int(self.is_hub),
-                    self.capability_score(),
-                ),
-            )
-            await db.commit()
 
 
 async def _get_ram_mb() -> int:
