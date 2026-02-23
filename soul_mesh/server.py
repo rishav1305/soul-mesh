@@ -86,6 +86,10 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
     async def nodes():
         return await app.state.hub.list_nodes()
 
+    @app.get("/api/mesh/nodes/{node_id}/heartbeats")
+    async def node_heartbeats(node_id: str, limit: int = 30):
+        return await app.state.hub.heartbeat_history(node_id, limit=min(limit, 100))
+
     @app.get("/api/mesh/identity")
     async def identity():
         n = app.state.node

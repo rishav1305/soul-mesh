@@ -192,6 +192,26 @@ class Hub:
             "storage_total_gb": float(row["storage_total_gb"]),
         }
 
+    async def heartbeat_history(self, node_id: str, limit: int = 30) -> list[dict]:
+        """Return recent heartbeats for a node, most recent first.
+
+        Parameters
+        ----------
+        node_id : str
+            The node whose heartbeat history to retrieve.
+        limit : int
+            Maximum number of heartbeat rows to return (default 30).
+
+        Returns
+        -------
+        list[dict]
+            Heartbeat rows ordered by ``recorded_at`` descending.
+        """
+        return await self._db.fetch_all(
+            "SELECT * FROM heartbeats WHERE node_id = ? ORDER BY recorded_at DESC LIMIT ?",
+            (node_id, limit),
+        )
+
     async def list_nodes(self) -> list[dict]:
         """Return all registered nodes ordered by name.
 
