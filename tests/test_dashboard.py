@@ -51,7 +51,7 @@ async def test_dashboard_initial_state():
     from soul_mesh.dashboard import MeshDashboard
 
     app = MeshDashboard(hub_url="http://localhost:8340")
-    assert app._nodes == []
+    assert app.mesh_nodes == []
     assert app._status == {}
     assert app._heartbeat_cache == {}
     assert app._selected_node_id is None

@@ -360,7 +360,7 @@ class RemoteShellScreen(Screen):
 
     def on_mount(self) -> None:
         """Populate the node selector from the app's node list."""
-        nodes: list[dict] = getattr(self.app, "_nodes", [])
+        nodes: list[dict] = getattr(self.app, "mesh_nodes", [])
         options = [
             (node.get("name", node.get("id", "unknown")), node.get("id", ""))
             for node in nodes
@@ -500,7 +500,7 @@ class MeshDashboard(App):
         super().__init__()
         self.hub_url = hub_url
         self._client = httpx.AsyncClient(base_url=hub_url, timeout=5.0)
-        self._nodes: list[dict] = []
+        self.mesh_nodes: list[dict] = []
         self._status: dict = {}
         self._heartbeat_cache: dict[str, list[dict]] = {}
         self._selected_node_id: str | None = None
@@ -514,12 +514,12 @@ class MeshDashboard(App):
 
     async def _poll_data(self) -> None:
         """Fetch nodes and status from the hub API."""
-        old_nodes = list(self._nodes)  # snapshot before update
+        old_nodes = list(self.mesh_nodes)  # snapshot before update
 
         try:
             resp = await self._client.get("/api/mesh/nodes")
             resp.raise_for_status()
-            self._nodes = resp.json()
+            self.mesh_nodes = resp.json()
         except (httpx.HTTPError, httpx.StreamError) as exc:
             logger.debug("poll_nodes_failed", error=str(exc))
 
@@ -531,7 +531,7 @@ class MeshDashboard(App):
             logger.debug("poll_status_failed", error=str(exc))
 
         # Fetch latest heartbeat for each node to get live cpu/ram %
-        for node in self._nodes:
+        for node in self.mesh_nodes:
             nid = node.get("id", "")
             if not nid:
                 continue
@@ -550,7 +550,7 @@ class MeshDashboard(App):
                 logger.debug("poll_heartbeats_failed", node_id=nid, error=str(exc))
 
         # Generate alerts from state changes
-        new_alerts = generate_alerts(old_nodes, self._nodes)
+        new_alerts = generate_alerts(old_nodes, self.mesh_nodes)
         for alert in new_alerts:
             self._alerts.append(alert)
 
@@ -560,12 +560,12 @@ class MeshDashboard(App):
         """Push fresh data into whichever screen is currently active."""
         screen = self.screen
         if isinstance(screen, ClusterOverview):
-            screen.refresh_table(self._nodes)
+            screen.refresh_table(self.mesh_nodes)
             screen.update_header(self._status)
             # Aggregate sparkline: average CPU/RAM across all nodes
             all_cpu: list[float] = []
             all_ram: list[float] = []
-            for node in self._nodes:
+            for node in self.mesh_nodes:
                 nid = node.get("id", "")
                 hbs = self._heartbeat_cache.get(nid, [])
                 for hb in reversed(hbs):
@@ -575,7 +575,7 @@ class MeshDashboard(App):
 
         elif isinstance(screen, NodeDetail):
             nid = screen.node_id
-            node = next((n for n in self._nodes if n.get("id") == nid), None)
+            node = next((n for n in self.mesh_nodes if n.get("id") == nid), None)
             heartbeats = self._heartbeat_cache.get(nid, [])
             screen.update_node(node, heartbeats)
 
