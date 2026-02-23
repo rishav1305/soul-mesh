@@ -136,7 +136,7 @@ def _serve_hub(cfg, config_path: Path):
     )
     asyncio.run(node.init())
 
-    app = create_app(db, node)
+    app = create_app(db, node, secret=cfg.secret, stale_interval=cfg.stale_timeout)
 
     click.echo(f"Starting hub on port {cfg.port}...")
 
