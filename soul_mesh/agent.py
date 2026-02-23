@@ -84,6 +84,47 @@ class Agent:
             **snapshot,
         }
 
+    async def _handle_command(self, data: dict) -> dict:
+        """Run a command locally and return the result.
+
+        Called when the hub sends a ``run_command`` message over the
+        WebSocket.  The agent executes the command in a subprocess and
+        returns stdout, stderr, and exit code.
+        """
+        cmd_id = data.get("cmd_id", "")
+        command = data.get("command", "")
+        logger.info("running_remote_command", cmd_id=cmd_id[:8], command=command[:80])
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+            return {
+                "type": "command_result",
+                "cmd_id": cmd_id,
+                "stdout": stdout.decode(errors="replace"),
+                "stderr": stderr.decode(errors="replace"),
+                "exit_code": proc.returncode,
+            }
+        except asyncio.TimeoutError:
+            return {
+                "type": "command_result",
+                "cmd_id": cmd_id,
+                "stdout": "",
+                "stderr": "Command timed out after 30s",
+                "exit_code": -1,
+            }
+        except Exception as exc:
+            return {
+                "type": "command_result",
+                "cmd_id": cmd_id,
+                "stdout": "",
+                "stderr": str(exc),
+                "exit_code": -1,
+            }
+
     async def start(self) -> None:
         """Start the agent: initialize node and launch heartbeat loop."""
         self.running = True
@@ -142,6 +183,13 @@ class Agent:
                 heartbeat = await self._build_heartbeat()
                 await self._ws.send(json.dumps(heartbeat))
                 logger.debug("heartbeat_sent", node_id=self._node.id[:8])
+
+                # Read hub response; may contain a command to execute.
+                response = json.loads(await self._ws.recv())
+                if response.get("type") == "run_command":
+                    result = await self._handle_command(response)
+                    await self._ws.send(json.dumps(result))
+
                 backoff = _BACKOFF_BASE  # reset on success
                 await asyncio.sleep(self.config.heartbeat_interval)
 

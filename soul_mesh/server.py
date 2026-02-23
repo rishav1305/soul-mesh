@@ -20,6 +20,7 @@ import structlog
 
 from soul_mesh.auth import verify_mesh_token
 from soul_mesh.db import MeshDB
+from soul_mesh.executor import CommandRelay
 from soul_mesh.hub import Hub
 from soul_mesh.node import NodeInfo
 
@@ -54,7 +55,8 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
     """
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+    from pydantic import BaseModel
 
     @asynccontextmanager
     async def lifespan(app):
@@ -73,6 +75,7 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
     app.state.hub = Hub(db)
     app.state.node = node
     app.state.secret = secret
+    app.state.relay = CommandRelay()
 
     @app.get("/api/mesh/health")
     async def health():
@@ -103,6 +106,20 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
             "arch": n.arch,
         }
 
+    class RunCommandRequest(BaseModel):
+        node_id: str
+        command: str
+
+    @app.post("/api/mesh/run")
+    async def run_command_endpoint(req: RunCommandRequest):
+        try:
+            result = await app.state.relay.send_command(req.node_id, req.command)
+            return result
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Command timed out")
+
     @app.websocket("/api/mesh/ws")
     async def websocket_heartbeat(websocket: WebSocket):
         token = websocket.query_params.get("token")
@@ -126,6 +143,7 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
         first_message = True
 
         logger.info("ws_connected", node_id=node_id)
+        app.state.relay.register(node_id, websocket)
 
         try:
             while True:
@@ -133,6 +151,12 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
                     data = await websocket.receive_json()
                 except json.JSONDecodeError:
                     await websocket.send_json({"error": "invalid JSON"})
+                    continue
+
+                # Handle command results from the agent before heartbeat processing.
+                if data.get("type") == "command_result":
+                    app.state.relay.deliver_result(data["cmd_id"], data)
+                    await websocket.send_json({"status": "ok"})
                     continue
 
                 if first_message:
@@ -146,6 +170,7 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
 
                 await websocket.send_json({"status": "ok"})
         except WebSocketDisconnect:
+            app.state.relay.unregister(node_id)
             logger.info("ws_disconnected", node_id=node_id)
 
     return app
