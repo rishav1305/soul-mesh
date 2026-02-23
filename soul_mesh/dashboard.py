@@ -31,9 +31,9 @@ from textual.widgets import (
 
 import httpx
 import structlog
+from rich.text import Text
 
 logger = structlog.get_logger("soul-mesh.dashboard")
-from rich.text import Text
 
 
 # ---------------------------------------------------------------------------

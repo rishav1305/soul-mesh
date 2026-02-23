@@ -322,10 +322,11 @@ result = await redeem_link_code(db, code, node_id="new-node-id", ip_address="192
 ## CLI
 
 ```
-soul-mesh init    Initialize a new node (hub or agent)
-soul-mesh serve   Start the hub server or agent heartbeat loop
-soul-mesh status  Show cluster resource totals
-soul-mesh nodes   List all registered nodes
+soul-mesh init       Initialize a new node (hub or agent)
+soul-mesh serve      Start the hub server or agent heartbeat loop
+soul-mesh status     Show cluster resource totals
+soul-mesh nodes      List all registered nodes
+soul-mesh dashboard  Launch the TUI dashboard (requires [dashboard] extra)
 ```
 
 ## Configuration
@@ -354,11 +355,12 @@ pip install -e ".[dev,server]"
 pytest -v
 ```
 
-203 tests across 12 test files:
+243 tests across 15 test files:
 
 | Test file | Tests | Covers |
 |-----------|-------|--------|
 | test_config.py | 24 | YAML loading, env overrides, defaults |
+| test_dashboard.py | 20 | TUI screens, alerts, keybindings |
 | test_resources.py | 20 | CPU, memory, storage collection |
 | test_transport.py | 20 | WebSocket connections, message routing |
 | test_election.py | 20 | Hub election, hysteresis, tie-breaking, MeshDB persistence |
@@ -366,9 +368,11 @@ pytest -v
 | test_hub.py | 16 | Node registry, heartbeats, stale detection, aggregation |
 | test_server.py | 14 | REST endpoints, WebSocket heartbeats, stale sweep |
 | test_linking.py | 14 | Code generation, redemption, rate limiting |
+| test_executor.py | 13 | Command relay, send/deliver, connection management |
 | test_agent.py | 13 | Heartbeat building, start/stop lifecycle |
 | test_discovery.py | 11 | mDNS announcer, Tailscale peer discovery |
 | test_auth.py | 8 | JWT creation, verification, expiry |
+| test_heartbeat_history.py | 7 | History queries, endpoint limit capping |
 | test_cli.py | 7 | init, status, nodes commands |
 | test_integration.py | 2 | Agent-to-hub end-to-end heartbeat flow |
 
@@ -380,9 +384,9 @@ Soul-mesh is built in layers, each independently useful:
 |-------|------|--------|
 | 0 | Mesh Core (discovery, auth, transport, heartbeats) | Shipped (v0.2.0) |
 | 1 | Server (FastAPI REST API, CLI) | Shipped (v0.2.0) |
-| 2 | Task Engine (distribute work across nodes) | Planned |
+| 2 | LLM Inference (distribute inference across nodes) | Planned |
 | 3 | Storage (unified filesystem across nodes) | Planned |
-| 4 | Dashboard (web UI for cluster management) | Planned |
+| 4 | Dashboard (TUI for cluster management) | Shipped (v0.3.0) |
 
 ## License
 

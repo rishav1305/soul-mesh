@@ -112,8 +112,8 @@ class Agent:
             try:
                 proc.kill()
                 await proc.wait()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("proc_kill_failed", error=str(exc))
             return {
                 "type": "command_result",
                 "cmd_id": cmd_id,
