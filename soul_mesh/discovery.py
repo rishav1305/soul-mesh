@@ -1,7 +1,8 @@
-"""Peer discovery via Tailscale -- no mDNS, no new dependencies.
+"""Peer discovery via Tailscale and mDNS/Zeroconf.
 
 Discovers mesh peers by querying ``tailscale status --json`` and probing
-``/api/mesh/identity`` on each peer.  Discovered peers are tracked
+``/api/mesh/identity`` on each peer.  Also supports LAN discovery via
+mDNS using the ``zeroconf`` library.  Discovered peers are tracked
 in-memory with optional SQLite persistence.
 """
 
@@ -12,10 +13,19 @@ import hashlib
 import hmac
 import json
 import secrets
+import socket
 
 import structlog
 
+try:
+    from zeroconf import ServiceInfo, Zeroconf
+    _HAS_ZEROCONF = True
+except ImportError:
+    _HAS_ZEROCONF = False
+
 logger = structlog.get_logger("soul-mesh.discovery")
+
+SERVICE_TYPE = "_soul-mesh._tcp.local."
 
 _PROBE_TIMEOUT = 5
 
@@ -58,6 +68,47 @@ async def get_tailscale_status() -> dict:
         logger.warning("Failed to get tailscale status", error=str(exc))
 
     return result
+
+
+class MdnsAnnouncer:
+    """Announce this node on the LAN via mDNS/Zeroconf."""
+
+    def __init__(self, node) -> None:
+        self._node = node
+        self._zc: Zeroconf | None = None
+        self._info: ServiceInfo | None = None
+
+    def _build_service_info(self, ip: str) -> ServiceInfo | None:
+        if not _HAS_ZEROCONF:
+            return None
+        return ServiceInfo(
+            SERVICE_TYPE,
+            f"{self._node.name}.{SERVICE_TYPE}",
+            addresses=[socket.inet_aton(ip)],
+            port=self._node.port,
+            properties={
+                "node_id": self._node.id,
+                "name": self._node.name,
+            },
+        )
+
+    async def start(self, ip: str) -> None:
+        if not _HAS_ZEROCONF:
+            logger.warning("zeroconf not installed -- mDNS disabled")
+            return
+        self._info = self._build_service_info(ip)
+        if not self._info:
+            return
+        self._zc = Zeroconf()
+        self._zc.register_service(self._info)
+        logger.info("mDNS announced", service=SERVICE_TYPE, ip=ip, port=self._node.port)
+
+    async def stop(self) -> None:
+        if self._zc and self._info:
+            self._zc.unregister_service(self._info)
+            self._zc.close()
+            self._zc = None
+        logger.debug("mDNS stopped")
 
 
 class PeerDiscovery:
