@@ -243,3 +243,13 @@ def nodes(config_dir: str | None):
             f"{n.get('storage_total_gb', 0):<12.1f} "
             f"{n.get('id', '')}"
         )
+
+
+@main.command()
+@click.option("--hub", "hub_url", default="http://localhost:8340", help="Hub URL.")
+def dashboard(hub_url: str):
+    """Launch the TUI dashboard."""
+    from soul_mesh.dashboard import MeshDashboard
+
+    app = MeshDashboard(hub_url=hub_url)
+    app.run()
