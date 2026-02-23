@@ -35,7 +35,6 @@ class TestMdnsAnnouncer:
         info = announcer._build_service_info("192.168.1.10")
         assert info is not None
 
-    @pytest.mark.asyncio
     async def test_start_stop(self):
         node = MockNode()
         announcer = MdnsAnnouncer(node)
@@ -81,7 +80,6 @@ class TestPeerDiscoveryOperations:
         discovery = PeerDiscovery(local_node=node)
         discovery.mark_peer_offline("unknown")  # should not raise
 
-    @pytest.mark.asyncio
     async def test_start_stop(self):
         node = MockNode()
         discovery = PeerDiscovery(local_node=node, discovery_interval=1)

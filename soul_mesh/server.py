@@ -5,9 +5,16 @@ and node identity, plus a WebSocket endpoint for agent heartbeats.
 FastAPI is an optional dependency (``pip install soul-mesh[server]``),
 so we import it inside ``create_app`` to avoid hard failures when only
 the core library is used.
+
+Note: ``from __future__ import annotations`` is intentionally omitted.
+PEP 563 deferred evaluation turns type hints into strings, which breaks
+FastAPI's ``WebSocket`` parameter injection (it sees the string
+``"WebSocket"`` instead of the class).  Python 3.10+ supports ``X | Y``
+union syntax natively, so the future import is not needed here.
 """
 
 import asyncio
+import json
 
 import structlog
 
@@ -118,9 +125,16 @@ def create_app(db: MeshDB, node: NodeInfo | None = None, *, secret: str = "", st
 
         try:
             while True:
-                data = await websocket.receive_json()
+                try:
+                    data = await websocket.receive_json()
+                except json.JSONDecodeError:
+                    await websocket.send_json({"error": "invalid JSON"})
+                    continue
 
                 if first_message:
+                    if data.get("node_id") != node_id:
+                        await websocket.close(code=4002, reason="node_id mismatch")
+                        return
                     await app.state.hub.register_node(data)
                     first_message = False
                 else:

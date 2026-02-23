@@ -99,14 +99,14 @@ class MdnsAnnouncer:
         self._info = self._build_service_info(ip)
         if not self._info:
             return
-        self._zc = Zeroconf()
-        self._zc.register_service(self._info)
+        self._zc = await asyncio.to_thread(Zeroconf)
+        await asyncio.to_thread(self._zc.register_service, self._info)
         logger.info("mDNS announced", service=SERVICE_TYPE, ip=ip, port=self._node.port)
 
     async def stop(self) -> None:
         if self._zc and self._info:
-            self._zc.unregister_service(self._info)
-            self._zc.close()
+            await asyncio.to_thread(self._zc.unregister_service, self._info)
+            await asyncio.to_thread(self._zc.close)
             self._zc = None
         logger.debug("mDNS stopped")
 

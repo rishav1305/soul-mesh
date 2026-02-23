@@ -228,6 +228,40 @@ class TestWebSocketEndpoint:
         heartbeats = await db.fetch_all("SELECT * FROM heartbeats WHERE node_id = 'node-2'")
         assert len(heartbeats) == 2
 
+    async def test_ws_rejects_node_id_mismatch(self, app, db):
+        """Token node_id must match the heartbeat payload node_id."""
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        token = create_mesh_token("node-A", "acct-1", "test-secret-key-32-bytes-long!!!")
+        client = TestClient(app)
+        with client.websocket_connect(f"/api/mesh/ws?token={token}") as ws:
+            ws.send_json({
+                "node_id": "node-B",
+                "name": "imposter",
+                "host": "10.0.0.9",
+                "port": 8340,
+                "platform": "linux",
+                "arch": "x86_64",
+                "cpu": {"cores": 4, "usage_percent": 10.0, "load_avg_1m": 0.1},
+                "memory": {"total_mb": 4096, "available_mb": 2048, "used_percent": 50.0},
+                "storage": {"mounts": [{"path": "/", "total_gb": 64, "free_gb": 30}]},
+            })
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_json()
+            assert exc_info.value.code == 4002
+
+    async def test_ws_handles_malformed_json(self, app, db):
+        """Malformed JSON gets an error response instead of crashing."""
+        from starlette.testclient import TestClient
+
+        token = create_mesh_token("node-3", "acct-1", "test-secret-key-32-bytes-long!!!")
+        client = TestClient(app)
+        with client.websocket_connect(f"/api/mesh/ws?token={token}") as ws:
+            ws.send_text("not valid json{{{")
+            resp = ws.receive_json()
+            assert resp["error"] == "invalid JSON"
+
 
 class TestStaleSweep:
     @pytest.fixture

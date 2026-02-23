@@ -165,14 +165,15 @@ class HubElection:
 
         winner_id = elect_hub(all_nodes)
 
-        await db.execute(
-            "UPDATE nodes SET role = 'agent' WHERE role = 'hub' AND id != ?",
-            (winner_id,),
-        )
-        await db.execute(
-            "UPDATE nodes SET role = 'hub' WHERE id = ?",
-            (winner_id,),
-        )
+        async with db.transaction() as cursor:
+            await cursor.execute(
+                "UPDATE nodes SET role = 'agent' WHERE role = 'hub' AND id != ?",
+                (winner_id,),
+            )
+            await cursor.execute(
+                "UPDATE nodes SET role = 'hub' WHERE id = ?",
+                (winner_id,),
+            )
 
         was_hub = self._local.is_hub
         self._local.is_hub = winner_id == self._local.id
